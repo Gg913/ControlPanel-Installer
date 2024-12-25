@@ -74,6 +74,35 @@ hyperlink() {
   echo -e "\e]8;;${1}\a${1}\e]8;;\a"
 }
 
+install_php() {
+    print "Installing or Updating PHP to version 8.2..."
+
+    case "$OS" in
+        ubuntu | debian)
+            apt-get update -y
+            apt-get install -y software-properties-common
+            LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php
+            apt-get update -y
+            apt-get install -y php8.2 php8.2-{cli,gd,mysql,pdo,mbstring,tokenizer,bcmath,xml,fpm,curl,zip,intl}
+        ;;
+        centos)
+            if [ "$OS_VER_MAJOR" == "7" ]; then
+                yum install -y epel-release http://rpms.remirepo.net/enterprise/remi-release-7.rpm
+                yum install -y yum-utils
+                yum-config-manager --disable remi-php* && yum-config-manager --enable remi-php82
+                yum install -y php php-{cli,fpm,gd,mysqlnd,pdo,mbstring,tokenizer,bcmath,xml,curl,zip,intl}
+            elif [ "$OS_VER_MAJOR" == "8" ]; then
+                dnf module reset php -y
+                dnf module enable php:remi-8.2 -y
+                dnf install -y php php-{cli,fpm,gd,mysqlnd,pdo,mbstring,tokenizer,bcmath,xml,curl,zip,intl}
+            fi
+        ;;
+        *)
+            print_error "Unsupported OS: $OS $OS_VER. Exiting."
+            exit 1
+        ;;
+    esac
+}
 # Colors #
 GREEN="\e[0;92m"
 YELLOW="\033[1;33m"
@@ -217,13 +246,13 @@ sleep 2
 
 case "$OS" in
     debian)
-      PHP_SOCKET="/run/php/php8.1-fpm.sock"
+      PHP_SOCKET="/run/php/php8.2-fpm.sock"
       [ "$OS_VER_MAJOR" == "9" ] && SUPPORTED=true
       [ "$OS_VER_MAJOR" == "10" ] && SUPPORTED=true
       [ "$OS_VER_MAJOR" == "11" ] && SUPPORTED=true
     ;;
     ubuntu)
-      PHP_SOCKET="/run/php/php8.1-fpm.sock"
+      PHP_SOCKET="/run/php/php8.2-fpm.sock"
       [ "$OS_VER_MAJOR" == "18" ] && SUPPORTED=true
       [ "$OS_VER_MAJOR" == "20" ] && SUPPORTED=true
       [ "$OS_VER_MAJOR" == "22" ] && SUPPORTED=true
@@ -519,7 +548,7 @@ apt-get update -y && apt-get upgrade -y
 [ "$OS_VER_MAJOR" == "18" ] && apt-add-repository universe
 
 # Install Dependencies
-apt-get install -y php8.1 php8.1-{cli,gd,mysql,pdo,mbstring,tokenizer,bcmath,xml,fpm,curl,zip,intl} mariadb-server nginx tar unzip git redis-server psmisc net-tools
+apt-get install -y php8.2 php8.2-{cli,gd,mysql,pdo,mbstring,tokenizer,bcmath,xml,fpm,curl,zip,intl} mariadb-server nginx tar unzip git redis-server psmisc net-tools
 
 # Enable services
 enable_services_debian_based
@@ -543,7 +572,7 @@ curl -sS https://downloads.mariadb.com/MariaDB/mariadb_repo_setup | bash
 apt-get update -y && apt-get upgrade -y
 
 # Install Dependencies
-apt-get install -y php8.1 php8.1-{cli,gd,mysql,pdo,mbstring,tokenizer,bcmath,xml,fpm,curl,zip,intl} mariadb-server nginx tar unzip git redis-server psmisc net-tools
+apt-get install -y php8.2 php8.2-{cli,gd,mysql,pdo,mbstring,tokenizer,bcmath,xml,fpm,curl,zip,intl} mariadb-server nginx tar unzip git redis-server psmisc net-tools
 
 # Enable services
 enable_services_debian_based
@@ -559,7 +588,7 @@ if [ "$OS_VER_MAJOR" == "7" ]; then
     # Install MariaDB
     curl -sS https://downloads.mariadb.com/MariaDB/mariadb_repo_setup | bash
 
-    # Add remi repo (php8.1)
+    # Add remi repo (php8.2)
     yum install -y epel-release http://rpms.remirepo.net/enterprise/remi-release-7.rpm
     yum install -y yum-utils
     yum-config-manager -y --disable remi-php54
@@ -572,9 +601,9 @@ if [ "$OS_VER_MAJOR" == "7" ]; then
     # SELinux tools
     yum install -y policycoreutils selinux-policy selinux-policy-targeted setroubleshoot-server setools setools-console mcstrans
     
-    # Add remi repo (php8.1)
+    # Add remi repo (php8.2)
     yum install -y epel-release http://rpms.remirepo.net/enterprise/remi-release-8.rpm
-    yum module enable -y php:remi-8.1
+    yum module enable -y php:remi-8.2
 
     # Install MariaDB
     yum install -y mariadb mariadb-server
@@ -624,148 +653,116 @@ bye
 }
 
 main() {
-# Check if it is already installed and check the version #
-if [ -d "/var/www/controlpanel" ]; then
-  update_variables
-  if [ "$CLIENT_VERSION" != "$LATEST_VERSION" ]; then
-      print_warning "You already have the panel installed."
-      echo -ne "* The script detected that the version of your panel is ${YELLOW}$CLIENT_VERSION${RESET}, the latest version of the panel is ${YELLOW}$LATEST_VERSION${RESET}, would you like to upgrade? (y/N): "
-      read -r UPGRADE_PANEL
-      if [[ "$UPGRADE_PANEL" =~ [Yy] ]]; then
-          check_distro
-          only_upgrade_panel
-        else
-          print "Ok, bye..."
-          exit 1
-      fi
+    check_distro
+
+    # Ensure PHP is compatible
+    PHP_VERSION=$(php -v | grep -oP '^PHP \K([0-9]+\.[0-9]+\.[0-9]+)' || echo "0.0.0")
+    REQUIRED_PHP_VERSION="8.2.0"
+
+    if [[ "$(printf '%s\n' "$REQUIRED_PHP_VERSION" "$PHP_VERSION" | sort -V | head -n1)" != "$REQUIRED_PHP_VERSION" ]]; then
+        install_php
     else
-      print_warning "The panel is already installed, aborting..."
-      exit 1
-  fi
-fi
-
-# Check if pterodactyl is installed #
-if [ ! -d "/var/www/pterodactyl" ]; then
-  print_warning "An installation of pterodactyl was not found in the directory $YELLOW/var/www/pterodactyl${RESET}"
-  echo -ne "* Is your pterodactyl panel installed on this machine? (y/N): "
-  read -r PTERO_DIR
-  if [[ "$PTERO_DIR" =~ [Yy] ]]; then
-    echo -e "* ${GREEN}EXAMPLE${RESET}: /var/www/myptero"
-    echo -ne "* Enter the directory from where your pterodactyl panel is installed: "
-    read -r PTERO_DIR
-    if [ -f "$PTERO_DIR/config/app.php" ]; then
-        print "Pterodactyl was found, continuing..."
-      else
-        print_error "Pterodactyl not found, running script again..."
-        main
+        print_success "PHP is already at a compatible version: $PHP_VERSION"
     fi
-  fi
-fi
 
-# Check Distro #
-check_distro
+    # Check if it is already installed and check the version #
+    if [ -d "/var/www/controlpanel" ]; then
+        update_variables
+        if [ "$CLIENT_VERSION" != "$LATEST_VERSION" ]; then
+            print_warning "You already have the panel installed."
+            echo -ne "* The script detected that the version of your panel is ${YELLOW}$CLIENT_VERSION${RESET}, the latest version of the panel is ${YELLOW}$LATEST_VERSION${RESET}, would you like to upgrade? (y/N): "
+            read -r UPGRADE_PANEL
+            if [[ "$UPGRADE_PANEL" =~ [Yy] ]]; then
+                check_distro
+                only_upgrade_panel
+            else
+                print "Ok, bye..."
+                exit 1
+            fi
+        else
+            print_warning "The panel is already installed, aborting..."
+            exit 1
+        fi
+    fi
 
-# Check if the OS is compatible #
-check_compatibility
+    # Check if pterodactyl is installed #
+    if [ ! -d "/var/www/pterodactyl" ]; then
+        print_warning "An installation of pterodactyl was not found in the directory $YELLOW/var/www/pterodactyl${RESET}"
+        echo -ne "* Is your pterodactyl panel installed on this machine? (y/N): "
+        read -r PTERO_DIR
+        if [[ "$PTERO_DIR" =~ [Yy] ]]; then
+            echo -e "* ${GREEN}EXAMPLE${RESET}: /var/www/myptero"
+            echo -ne "* Enter the directory from where your pterodactyl panel is installed: "
+            read -r PTERO_DIR
+            if [ -f "$PTERO_DIR/config/app.php" ]; then
+                print "Pterodactyl was found, continuing..."
+            else
+                print_error "Pterodactyl not found, running script again..."
+                main
+            fi
+        fi
+    fi
 
-# Set FQDN for panel #
-while [ -z "$FQDN" ]; do
-  print_warning "Do not use a domain that is already in use by another application, such as the domain of your pterodactyl."
-  echo -ne "* Set the Hostname/FQDN for panel (${YELLOW}panel.example.com${RESET}): "
-  read -r FQDN
-  [ -z "$FQDN" ] && print_error "FQDN cannot be empty"
-done
+    # Check OS Compatibility #
+    check_compatibility
 
-# Install the packages to check FQDN and ask about SSL only if FQDN is a string #
-if [[ "$FQDN" == [a-zA-Z]* ]]; then
-  ask_ssl
-fi
+    # Set FQDN for panel #
+    while [ -z "$FQDN" ]; do
+        print_warning "Do not use a domain that is already in use by another application, such as the domain of your pterodactyl."
+        echo -ne "* Set the Hostname/FQDN for panel (${YELLOW}panel.example.com${RESET}): "
+        read -r FQDN
+        [ -z "$FQDN" ] && print_error "FQDN cannot be empty"
+    done
 
-# Set host of the database #
-echo -ne "* Enter the host of the database (${YELLOW}127.0.0.1${RESET}): "
-read -r DB_HOST
-[ -z "$DB_HOST" ] && DB_HOST="127.0.0.1"
+    # Install the packages to check FQDN and ask about SSL only if FQDN is a string #
+    if [[ "$FQDN" == [a-zA-Z]* ]]; then
+        ask_ssl
+    fi
 
-# Set port of the database #
-echo -ne "* Enter the port of the database (${YELLOW}3306${RESET}): "
-read -r DB_PORT
-[ -z "$DB_PORT" ] && DB_PORT="3306"
+    # Set Database Information #
+    echo -ne "* Enter the host of the database (${YELLOW}127.0.0.1${RESET}): "
+    read -r DB_HOST
+    [ -z "$DB_HOST" ] && DB_HOST="127.0.0.1"
 
-# Set name of the database #
-echo -ne "* Enter the name of the database (${YELLOW}controlpanel${RESET}): "
-read -r DB_NAME
-[ -z "$DB_NAME" ] && DB_NAME="controlpanel"
+    echo -ne "* Enter the port of the database (${YELLOW}3306${RESET}): "
+    read -r DB_PORT
+    [ -z "$DB_PORT" ] && DB_PORT="3306"
 
-# Set user of the database #
-echo -ne "* Enter the username of the database (${YELLOW}controlpaneluser${RESET}): "
-read -r DB_USER
-[ -z "$DB_USER" ] && DB_USER="controlpaneluser"
+    echo -ne "* Enter the name of the database (${YELLOW}controlpanel${RESET}): "
+    read -r DB_NAME
+    [ -z "$DB_NAME" ] && DB_NAME="controlpanel"
 
-# Set pass of the database #
-password_input DB_PASS "Enter the password of the database (Enter for random password): " "Password cannot by empty!" "$RANDOM_PASSWORD"
+    echo -ne "* Enter the username of the database (${YELLOW}controlpaneluser${RESET}): "
+    read -r DB_USER
+    [ -z "$DB_USER" ] && DB_USER="controlpaneluser"
 
-# Ask Time-Zone #
-echo -e "* List of valid time-zones here: ${YELLOW}$(hyperlink "http://php.net/manual/en/timezones.php")${RESET}"
-echo -ne "* Select Time-Zone (${YELLOW}America/New_York${RESET}): "
-read -r TIMEZONE
-[ -z "$TIMEZONE" ] && TIMEZONE="America/New_York"
+    password_input DB_PASS "Enter the password of the database (Enter for random password): " "Password cannot by empty!" "$RANDOM_PASSWORD"
 
-# Summary #
-echo
-print_brake 75
-echo
-echo -e "* Hostname/FQDN: $FQDN"
-echo -e "* Database Host: $DB_HOST"
-echo -e "* Database Port: $DB_PORT"
-echo -e "* Database Name: $DB_NAME"
-echo -e "* Database User: $DB_USER"
-echo -e "* Database Pass: (censored)"
-echo -e "* Time-Zone: $TIMEZONE"
-echo -e "* Configure SSL: $CONFIGURE_SSL"
-echo
-print_brake 75
-echo
+    # Ask Time-Zone #
+    echo -e "* List of valid time-zones here: ${YELLOW}$(hyperlink "http://php.net/manual/en/timezones.php")${RESET}"
+    echo -ne "* Select Time-Zone (${YELLOW}America/New_York${RESET}): "
+    read -r TIMEZONE
+    [ -z "$TIMEZONE" ] && TIMEZONE="America/New_York"
 
-# Create the logs directory #
-mkdir -p $INFORMATIONS
+    # Summary #
+    echo
+    print_brake 75
+    echo
+    echo -e "* Hostname/FQDN: $FQDN"
+    echo -e "* Database Host: $DB_HOST"
+    echo -e "* Database Port: $DB_PORT"
+    echo -e "* Database Name: $DB_NAME"
+    echo -e "* Database User: $DB_USER"
+    echo -e "* Database Pass: (censored)"
+    echo -e "* Time-Zone: $TIMEZONE"
+    echo -e "* Configure SSL: $CONFIGURE_SSL"
+    echo
+    print_brake 75
+    echo
 
-# Write the information to a log #
-{
-  echo -e "* Hostname/FQDN: $FQDN"
-  echo -e "* Database Host: $DB_HOST"
-  echo -e "* Database Port: $DB_PORT"
-  echo -e "* Database Name: $DB_NAME"
-  echo -e "* Database User: $DB_USER"
-  echo -e "* Database Pass: $DB_PASS"
-  echo ""
-  echo "* After using this file, delete it immediately!"
-} > $INFORMATIONS/install.info
-
-# Confirm all the choices #
-echo -n "* Initial settings complete, do you want to continue to the installation? (y/N): "
-read -r CONTINUE_INSTALL
-[[ "$CONTINUE_INSTALL" =~ [Yy] ]] && install_controlpanel
-[[ "$CONTINUE_INSTALL" == [Nn] ]] && print_error "Installation aborted!" && exit 1
+    # Confirm all the choices #
+    echo -n "* Initial settings complete, do you want to continue to the installation? (y/N): "
+    read -r CONTINUE_INSTALL
+    [[ "$CONTINUE_INSTALL" =~ [Yy] ]] && install_controlpanel
+    [[ "$CONTINUE_INSTALL" == [Nn] ]] && print_error "Installation aborted!" && exit 1
 }
-
-bye() {
-echo
-print_brake 90
-echo
-echo -e "${GREEN}* The script has finished the installation process!${RESET}"
-
-[ "$CONFIGURE_SSL" == true ] && APP_URL="https://$FQDN"
-[ "$CONFIGURE_SSL" == false ] && APP_URL="http://$FQDN"
-
-echo -e "${GREEN}* To complete the configuration of your panel, go to ${YELLOW}$(hyperlink "$APP_URL/install")${RESET}"
-echo -e "${GREEN}* Thank you for using this script!"
-echo -e "* Wiki: ${YELLOW}$(hyperlink "$WIKI_LINK")${RESET}"
-echo -e "${GREEN}* Support Group: ${YELLOW}$(hyperlink "$SUPPORT_LINK")${RESET}"
-echo -e "${GREEN}*${RESET} If you have questions about the information that is requested on the installation page\nall the necessary information about it is written in: (${YELLOW}$INFORMATIONS/install.info${RESET})."
-echo
-print_brake 90
-echo
-}
-
-# Exec Script #
-main
